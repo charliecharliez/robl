@@ -8,10 +8,9 @@ local are_inbounds: (A: Matrix, m: number, n: number) -> boolean;
 local scalar_mult: (A: Matrix, b: number) -> Matrix;
 local matrix_mult: (A: Matrix, B: Matrix) -> Matrix;
 local num_digits: (int: number) -> number;
+local is_zero: (value: number, epsilon: number?) -> boolean
 local bound_err_str: (A: Matrix, m: number, n: number) -> string
 local immutable_err: () -> string
-
-local identity_cache: {[number]: Matrix} = {} --caches identity matrices, key represents size (int)
 
 local INDICES_OUT_OF_BOUNDS_ERR = "Indices out of bounds\n m: [1, %d], n: [1, %d]\nAttempted to index (m, n) = (%d, %d)";
 
@@ -44,7 +43,7 @@ function MatrixClass.new(rows: number, cols: number, init_elements: {number}?, i
 	else
 		elements = table.create(rows * cols, 0);
 	end
-	return raw_constructor(rows, cols, elements, immutable):: Matrix
+	return raw_constructor(rows, cols, elements, immutable)
 end
 
 --[[Returns an n x n identity matrix, where n is an integer equal to parameter: size.
@@ -55,11 +54,6 @@ function MatrixClass.identity(size: number): Matrix
 	local size: number = math.abs(size)
 	if size % 1 ~= 0 then
 		error("Size of identity matrix must be an integer")
-	end
-	
-	local cached: Matrix? = identity_cache[size]
-	if cached then
-		return cached
 	end
 	
 	local elements: {number} = {}
@@ -74,10 +68,7 @@ function MatrixClass.identity(size: number): Matrix
 		elements[i] = value
 	end
 	
-	local identity_matrix: Matrix = raw_constructor(size, size, elements, true)
-	identity_cache[size] = identity_matrix
-	
-	return identity_matrix
+	return raw_constructor(size, size, elements, true)
 end
 
 function MatrixClass.zero(rows: number, columns: number?): Matrix
@@ -358,9 +349,134 @@ function MatrixClass.Transpose(self: Matrix): Matrix
 
 	return raw_constructor(self.n, self.m, new_elems)
 end
+--[[
+    Computes the determinant of the matrix using Laplace expansion (recursive)
+    Note: For larger matrices (>4x4), LU decomposition would be more efficient
+]]
+function MatrixClass.Determinant(self: Matrix): number
+	if self.m ~= self.n then
+		error("Determinant can only be calculated for square matrices")
+	end
+
+	local size = self.m
+
+	-- Base cases
+	if size == 1 then
+		return self(1, 1)
+	elseif size == 2 then
+		return self(1, 1) * self(2, 2) - self(1, 2) * self(2, 1)
+	elseif size == 3 then
+		-- Sarrus' rule for 3x3
+		return self(1,1)*self(2,2)*self(3,3) + 
+			self(1,2)*self(2,3)*self(3,1) + 
+			self(1,3)*self(2,1)*self(3,2) - 
+			self(1,3)*self(2,2)*self(3,1) - 
+			self(1,2)*self(2,1)*self(3,3) - 
+			self(1,1)*self(2,3)*self(3,2)
+	end
+
+	-- Recursive case for n > 3
+	local det = 0
+	local sign = 1
+
+	-- Expand along first row
+	for col = 1, size do
+		-- Get minor matrix
+		local minor = MatrixClass.new(size - 1, size - 1)
+		local minor_row = 1
+
+		for row = 2, size do  -- Skip first row
+			local minor_col = 1
+			for j = 1, size do
+				if j ~= col then
+					minor:SetElement(minor_row, minor_col, self(row, j))
+					minor_col += 1
+				end
+			end
+			minor_row += 1
+		end
+
+		-- Add to determinant with alternating signs
+		det = det + sign * self(1, col) * minor:Determinant()
+		sign = -sign
+	end
+
+	return det
+end
+
+--[[
+    Computes the adjugate (also called adjoint) of the matrix
+    The adjugate is the transpose of the cofactor matrix
+]]
+function MatrixClass.Adjugate(self: Matrix): Matrix
+	if self.m ~= self.n then
+		error("Adjugate can only be calculated for square matrices")
+	end
+
+	local size = self.m
+	local adjugate = MatrixClass.new(size, size)
+
+	if size == 1 then
+		-- Special case for 1x1 matrix
+		adjugate:SetElement(1, 1, 1)
+		return adjugate
+	end
+
+	for i = 1, size do
+		for j = 1, size do
+			-- Get minor matrix for position (i,j)
+			local minor = MatrixClass.new(size - 1, size - 1)
+			local minor_row = 1
+
+			for row = 1, size do
+				if row ~= i then
+					local minor_col = 1
+					for col = 1, size do
+						if col ~= j then
+							minor:SetElement(minor_row, minor_col, self(row, col))
+							minor_col += 1
+						end
+					end
+					minor_row += 1
+				end
+			end
+
+			-- Calculate cofactor (including sign)
+			local sign = ((i + j) % 2 == 0) and 1 or -1
+			local cofactor = sign * minor:Determinant()
+
+			-- Transpose as we go (adjugate is transpose of cofactor matrix)
+			adjugate:SetElement(j, i, cofactor)
+		end
+	end
+
+	return adjugate
+end
+
+--[[
+    Computes the inverse of the matrix using the adjugate method:
+    A⁻¹ = (1/det(A)) * adj(A)
+    
+    Returns nil if matrix is singular (determinant = 0)
+]]
+function MatrixClass.Inverse(self: Matrix): Matrix?
+	if self.m ~= self.n then
+		error("Inverse can only be calculated for square matrices")
+	end
+
+	local det = self:Determinant()
+	if is_zero(det) then
+		warn("Matrix is singular (determinant = 0), cannot compute inverse")
+		return nil
+	end
+
+	local adj = self:Adjugate()
+	return scalar_mult(adj, 1/det)
+end
+
 
 -- Helper function to check if a number is effectively zero (to avoid division by near-zero)
-local function IsZero(value: number, epsilon: number?): boolean
+is_zero = function(value: number, epsilon: number?): boolean
 	local epsilon: number = epsilon or 1e-10
 	return math.abs(value) < epsilon
 end
@@ -415,7 +531,7 @@ function MatrixClass.SolveLinearSystem(A: Matrix, B: Matrix): Matrix?
 	for pivot = 1, A_copy.m - 1 do
 		partialPivot(A_copy, B_copy, pivot, pivot)
 
-		if IsZero(A_copy(pivot, pivot)) then
+		if is_zero(A_copy(pivot, pivot)) then
 			warn("Matrix is singular or nearly singular")
 			return nil
 		end
@@ -444,7 +560,7 @@ function MatrixClass.SolveLinearSystem(A: Matrix, B: Matrix): Matrix?
 				sum = sum + A_copy(row, i) * X(i, col)
 			end
 
-			if IsZero(A_copy(row, row)) then
+			if is_zero(A_copy(row, row)) then
 				warn("Matrix is singular or nearly singular")
 				return nil
 			end
